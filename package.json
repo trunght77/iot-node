@@ -1,0 +1,23 @@
+{
+  "name": "iot-project",
+  "version": "1.0.0",
+  "main": "index.js",
+  "scripts": {
+    "start": "node app.js",
+    "dev": "nodemon app.js"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "description": "",
+  "dependencies": {
+    "@aws-sdk/client-timestream-write": "^3.687.0",
+    "aws-iot-device-sdk-v2": "^1.21.1",
+    "dotenv": "^16.4.5",
+    "express": "^4.21.1",
+    "mqtt": "^5.10.2"
+  },
+  "devDependencies": {
+    "nodemon": "^3.1.7"
+  }
+}
