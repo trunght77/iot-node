@@ -3,20 +3,21 @@ const fs = require("fs");
 const config = require("../config/awsConfig");
 const logger = require("../utils/logger");
 const MESSAGES = require("../utils/messages");
+const topics = require("../config/topics");
 
 const SUCCESS = MESSAGES.SUCCESS;
 const ERRORS = MESSAGES.ERRORS;
 
 class IoTService {
   constructor() {
-    this.connection = null;
+    this.connection = this.connect();
   }
 
   async connect() {
     try {
       if (this.connection) {
         logger.log(ERRORS.ALREADY_CONNECTED);
-        throw new Error(ERRORS.ALREADY_CONNECTED);
+        return this.connection;
       }
 
       const clientCert = fs.readFileSync(config.certFilePath);
@@ -35,81 +36,112 @@ class IoTService {
           .build();
 
       const mqttClient = new mqtt.MqttClient();
-      this.connection = mqttClient.new_connection(clientConfig);
+      const connection = mqttClient.new_connection(clientConfig);
 
-      this.connection.on("connect", () => {
+      connection.on("connect", async () => {
         logger.log(SUCCESS.CONNECT_SUCCESS);
+        let listSubscribed = [topics.value, topics.client_to_server];
+
+        listSubscribed.forEach((topic) => {
+          try {
+            connection.subscribe(topic, mqtt.QoS.AtLeastOnce);
+            logger.log(SUCCESS.SUBSCRIBE_SUCCESS(topic));
+          } catch (error) {
+            logger.error(ERRORS.SUBSCRIBE_FAILED(error));
+          }
+        });
       });
 
-      this.connection.on("error", (error) => {
+      connection.on("error", (error) => {
         return new Error(error);
       });
 
-      await this.connection.connect();
+      await connection.connect();
+
+      return connection;
     } catch (error) {
-      this.connection = null;
-      logger.error(ERRORS.CONNECT_FAILED(error?.message));
-      throw new Error(error);
+      logger.error(ERRORS.CONNECT_FAILED(error));
+      return null;
     }
   }
 
-  async subscribe(topic, messageHandler) {
-    try {
-      if (!this.connection) {
-        logger.error(ERRORS.NO_CONNECTION);
-        throw new Error(ERRORS.NO_CONNECTION);
-      }
-
-      await this.connection.subscribe(
-        topic,
-        mqtt.QoS.AtLeastOnce,
-        (receivedTopic, payload) => {
-          logger.log(
-            SUCCESS.SUBSCRIBE_SUCCESS(receivedTopic) +
-              `: ${JSON.stringify(payload)}`
-          );
-          messageHandler(receivedTopic, payload);
-        }
-      );
-      logger.log(SUCCESS.SUBSCRIBE_SUCCESS(topic));
-    } catch (error) {
-      logger.error(ERRORS.SUBSCRIBE_FAILED(error?.message));
-      throw new Error(error);
+  async ensureConnected() {
+    if (!this.connection) {
+      await this.connect();
     }
+    return this.connection;
   }
 
   async publish(topic, data) {
     try {
-      if (!this.connection) {
-        logger.error(ERRORS.NO_CONNECTION);
-        throw new Error(ERRORS.NO_CONNECTION);
-      }
+      const connection = await this.ensureConnected();
 
       const payload = JSON.stringify(data);
-      await this.connection.publish(topic, payload, mqtt.QoS.AtLeastOnce);
+      await connection.publish(topic, payload, mqtt.QoS.AtLeastOnce);
 
       logger.log(SUCCESS.PUBLISH_SUCCESS(topic) + `: ${payload}`);
+
+      if (topic == topics.client_to_server) {
+        const response = await this.waitForNewMessage(topics.server_to_client);
+        return response;
+      }
+
+      return null;
     } catch (error) {
-      logger.error(ERRORS.PUBLISH_FAILED(error?.message));
+      logger.error(ERRORS.PUBLISH_FAILED(error));
       throw new Error(error);
     }
   }
 
-  async disconnect() {
+  async waitForNewMessage(responseTopic) {
     try {
-      if (this.connection) {
-        logger.log(SUCCESS.DISCONNECTING);
+      const connection = await this.ensureConnected();
 
-        await this.connection.disconnect();
-        this.connection = null;
+      return await new Promise((resolve) => {
+        const timeout = setTimeout(() => {
+          logger.error(ERRORS.RESPONSE_TIMEOUT);
+          resolve(null);
+        }, 5000);
 
-        logger.log(SUCCESS.DISCONNECT_SUCCESS);
-      } else {
-        throw new Error(ERRORS.NO_CONNECTION_TO_DISCONNECT);
-      }
+        const onMessage = (topic, payload) => {
+          if (topic === responseTopic) {
+            clearTimeout(timeout);
+
+            setTimeout(() => {
+              try {
+                const buffer = Buffer.from(payload);
+                const payloadString = buffer.toString("utf-8");
+                const parsedPayload = JSON.parse(payloadString);
+                if (
+                  parsedPayload.command_id == "CMD00011" ||
+                  parsedPayload.command_id == "CMD00021" ||
+                  parsedPayload.command_id == "CMD00031"
+                ) {
+                  logger.log(
+                    SUCCESS.RECEIVE_RESPONSE(topic) +
+                      `: ${JSON.stringify(parsedPayload)}`
+                  );
+                  resolve(parsedPayload);
+                } else {
+                  resolve(null);
+                }
+              } catch (err) {
+                logger.error(ERRORS.INVALID_RESPONSE_FORMAT);
+                resolve(null);
+              } finally {
+                connection.unsubscribe(responseTopic).catch((err) => {
+                  logger.error(ERRORS.UNSUBSCRIBE_FAILED(err));
+                });
+              }
+            }, 1000);
+          }
+        };
+
+        connection.subscribe(responseTopic, mqtt.QoS.AtLeastOnce, onMessage);
+      });
     } catch (error) {
-      logger.error(ERRORS.DISCONNECT_ERROR(error?.message));
-      throw new Error(error);
+      logger.error(ERRORS.LISTEN_FAILED(error));
+      return null;
     }
   }
 }

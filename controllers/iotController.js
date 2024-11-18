@@ -1,44 +1,15 @@
 const iotService = require("../services/iotService");
-const logger = require("../utils/logger");
 const response = require("../utils/responseFormatter");
 const MESSAGES = require("../utils/messages");
+const topics = require("../config/topics");
 
 const SUCCESS = MESSAGES.SUCCESS;
 const ERROR = MESSAGES.ERRORS;
 
 class IoTController {
-  async connect(req, res) {
-    try {
-      await iotService.connect();
-
-      return response.success(res, SUCCESS.CONNECT_SUCCESS);
-    } catch (error) {
-      let msg = error?.message.replace("Error: ", "");
-      return response.error(res, msg);
-    }
-  }
-
-  async subscribe(req, res) {
-    try {
-      const { topic } = req.body;
-
-      await iotService.subscribe(topic, (receivedTopic, payload) => {
-        logger.log(
-          MESSAGES.SUCCESS.SUBSCRIBE_SUCCESS(receivedTopic) +
-            `: ${JSON.stringify(payload)}`
-        );
-      });
-
-      return response.success(res, SUCCESS.SUBSCRIBE_SUCCESS(topic));
-    } catch (error) {
-      let msg = error?.message.replace("Error: ", "");
-      return response.error(res, msg);
-    }
-  }
-
   async publishValue(req, res) {
     try {
-      const topic = "values";
+      const topic = topics.value;
       const { node_id, value_type, value } = req.body;
       const payload = { node_id, value_type, value };
 
@@ -55,21 +26,11 @@ class IoTController {
     }
   }
 
-  async disconnect(req, res) {
-    try {
-      await iotService.disconnect();
-      return response.success(res, SUCCESS.DISCONNECT_SUCCESS);
-    } catch (error) {
-      let msg = error?.message.replace("Error: ", "");
-      return response.error(res, msg);
-    }
-  }
-
   /**
    * Hàm xử lý chung để publish thông điệp
    */
   async publishCommand(req, res) {
-    const topic = "communicate/clienttoserver";
+    const topic = topics.client_to_server;
     var { command_id, command_name, value } = req.body;
 
     try {
@@ -80,13 +41,13 @@ class IoTController {
 
       // Validate và xử lý từng loại lệnh cụ thể
       let payload = {};
-      if (command_name == "CONTROL_RULE") {
+      if (command_id == "CMD00020") {
         var type = req.body.type;
         payload = IoTController.buildControlRule(type, value);
-      } else if (command_name == "SCENARIO") {
+      } else if (command_id == "CMD00030") {
         var type = req.body.type;
         payload = IoTController.buildScenario(type, value);
-      } else if (command_name == "CONTROL_DEVICE") {
+      } else if (command_id == "CMD00010") {
         let device_type = req.body.device_type;
         let node_id = req.body.node_id;
         let value = req.body.value;
@@ -99,12 +60,12 @@ class IoTController {
       payload = { command_id, command_name, ...payload };
 
       // Gửi lệnh qua MQTT
-      await iotService.publish(topic, payload);
+      const responseData = await iotService.publish(topic, payload);
 
       return response.success(
         res,
         MESSAGES.SUCCESS.PUBLISH_SUCCESS(topic),
-        payload
+        responseData
       );
     } catch (error) {
       const msg =
